@@ -49,7 +49,12 @@ cd ../client && npm install
 cp .env.example server/.env
 ```
 
-Edit `server/.env` with your credentials (see `.env.example` for required variables).
+Edit `server/.env` with your credentials (see `.env.example` for required variables), including `GOOGLE_AUTH_CLIENT_ID` for Google Sign-In token verification.
+
+For Google social login, also create `client/.env`:
+```bash
+REACT_APP_GOOGLE_CLIENT_ID=your_google_web_client_id
+```
 
 ### 3. Set up the database
 
@@ -77,6 +82,7 @@ The server runs on `http://localhost:5000` and the client on `http://localhost:3
 |--------|-------|------|-------------|
 | POST | `/api/auth/signup` | No | Create account |
 | POST | `/api/auth/login` | No | Login, returns JWT |
+| POST | `/api/auth/google` | No | Login with Google ID token, returns JWT |
 | GET | `/api/activities` | Yes | List user's tasks (paginated) |
 | POST | `/api/activities` | Yes | Create task (with file upload) |
 | PUT | `/api/activities/:id` | Yes | Update task |
@@ -90,6 +96,6 @@ The server runs on `http://localhost:5000` and the client on `http://localhost:3
 - CRUD operations with input validation
 - File uploads to Google Drive (10MB limit, restricted file types)
 - Deadline syncing with Google Calendar
-- Automated email reminders (24h before + at deadline)
+- Automated user email reminders (24h before + at deadline)
 - Bar chart data visualization
 - PDF and Excel report generation

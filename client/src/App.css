@@ -5,10 +5,28 @@
 }
 
 body {
-  font-family: Arial, sans-serif;
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #111827;
   margin: 0;
   padding: 0;
   background-color: #f5f5f5;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid #4E79A7;
+  outline-offset: 2px;
 }
 
 /* header */
@@ -23,7 +41,8 @@ header {
 
 header h1 {
   margin: 0;
-  font-size: 20px;
+  font-size: 1.6rem;
+  font-weight: 600;
 }
 
 header button {
@@ -48,17 +67,31 @@ main {
 }
 
 .form-section h3 {
-  margin-top: 0;
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.form-help {
+  margin: 6px 0 16px;
+  color: #4b5563;
+  font-size: 14px;
+}
+
+.form-status {
+  margin: 0 0 14px;
+  font-weight: bold;
 }
 
 .form-section form div {
   margin-bottom: 15px;
 }
 
-.form-section label {
+.form-section .form-label {
   display: block;
   margin-bottom: 5px;
-  font-weight: bold;
+  font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .form-section input[type="text"],
@@ -74,6 +107,97 @@ main {
   height: 80px;
 }
 
+.field-help {
+  display: block;
+  margin-top: 6px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.form-section .file-dropzone {
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px dashed #9ca3af;
+  border-radius: 6px;
+  background: #fafafa;
+  color: #374151;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.95rem;
+  font-weight: 400;
+}
+
+.form-section .file-dropzone.dragging {
+  border-color: #4E79A7;
+  background: #eef4fb;
+}
+
+.dropzone-main {
+  display: block;
+}
+
+.file-input-hidden {
+  display: none;
+}
+
+.file-name {
+  display: block;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.selected-file-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.selected-file-actions .file-remove-btn,
+.selected-file-actions .file-clear-btn {
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid #c5cbd3;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.selected-file-actions .file-remove-btn:hover,
+.selected-file-actions .file-clear-btn:hover {
+  background: #f3f4f6;
+}
+
+.selected-file-actions .file-clear-btn {
+  border-color: #b42318;
+  color: #b42318;
+}
+
+.selected-file-actions .file-clear-btn:hover {
+  background: #fff5f4;
+}
+
+.quick-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.quick-btn {
+  padding: 6px 10px;
+  border: 1px solid #c5cbd3;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.quick-btn:hover {
+  background: #f3f4f6;
+}
+
 .form-section button {
   padding: 10px 20px;
   background-color: #333;
@@ -87,6 +211,16 @@ main {
   background-color: #555;
 }
 
+.form-section .secondary-btn {
+  background: #fff;
+  color: #111827;
+  border: 1px solid #c5cbd3;
+}
+
+.form-section .secondary-btn:hover {
+  background: #f3f4f6;
+}
+
 /* chart section */
 .chart-section {
   background: white;
@@ -96,7 +230,15 @@ main {
 }
 
 .chart-section h3 {
-  margin-top: 0;
+  margin: 0 0 8px;
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.chart-help {
+  margin: 0 0 14px;
+  color: #4b5563;
+  font-size: 14px;
 }
 
 /* tasks section */
@@ -106,8 +248,26 @@ main {
   border: 1px solid #ccc;
 }
 
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
 .tasks-section h3 {
-  margin-top: 0;
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.count-badge {
+  background: #e8eef5;
+  color: #1f3a56;
+  font-size: 12px;
+  font-weight: bold;
+  padding: 5px 10px;
+  border-radius: 999px;
 }
 
 .tasks-section table {
@@ -124,11 +284,33 @@ main {
 
 .tasks-section th {
   background-color: #f0f0f0;
+  font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .tasks-section button {
-  padding: 5px 10px;
+  padding: 6px 10px;
   cursor: pointer;
+  border: 1px solid #b9bec5;
+  background: #fff;
+  border-radius: 4px;
+}
+
+.task-actions {
+  white-space: nowrap;
+}
+
+.task-actions button + button {
+  margin-left: 6px;
+}
+
+.task-actions .delete-btn {
+  border-color: #b42318;
+  color: #b42318;
+}
+
+.task-actions .delete-btn:hover {
+  background: #fff5f4;
 }
 
 /* login page */

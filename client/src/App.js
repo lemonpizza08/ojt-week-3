@@ -11,6 +11,24 @@ import './App.css';
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
 function App() {
+  const googleClientId = process.env.REACT_APP_GOOGLE_CLIENT_ID;
+  const taskCountText = (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`;
+  const parseDriveLinks = (driveLinkValue) => {
+    if (!driveLinkValue) return [];
+    if (Array.isArray(driveLinkValue)) return driveLinkValue.filter(Boolean);
+    if (typeof driveLinkValue !== 'string') return [];
+    const trimmed = driveLinkValue.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed.filter(Boolean);
+      } catch (err) {
+        console.log('could not parse drive links', err);
+      }
+    }
+    return [trimmed];
+  };
   // state for user auth
   const [user, setUser] = useState(null);
   const [isLogin, setIsLogin] = useState(true);
@@ -23,9 +41,11 @@ function App() {
   const [totalPages, setTotalPages] = useState(1);
 
   // state for form
-  const [taskForm, setTaskForm] = useState({ title: '', description: '', deadline: '', file: null });
+  const [taskForm, setTaskForm] = useState({ title: '', description: '', deadline: '', files: [] });
   const [editingTask, setEditingTask] = useState(null);
   const [formStatus, setFormStatus] = useState('');
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const isSaving = formStatus === 'Saving...';
 
   // state for chart data
   const [chartData, setChartData] = useState({ labels: [], datasets: [] });
@@ -43,6 +63,25 @@ function App() {
       loadTasks();
     }
   }, [user, page]);
+
+  useEffect(() => {
+    if (!isLogin || user || !googleClientId || !window.google?.accounts?.id) return;
+
+    const buttonContainer = document.getElementById('google-signin-button');
+    if (!buttonContainer) return;
+
+    buttonContainer.innerHTML = '';
+    window.google.accounts.id.initialize({
+      client_id: googleClientId,
+      callback: handleGoogleLogin,
+    });
+    window.google.accounts.id.renderButton(buttonContainer, {
+      theme: 'outline',
+      size: 'large',
+      width: 260,
+      text: 'signin_with',
+    });
+  }, [isLogin, user, googleClientId]);
 
   // function to get tasks from server
   async function loadTasks() {
@@ -68,9 +107,12 @@ function App() {
       setChartData({
         labels: Object.keys(dateCounts),
         datasets: [{
-          label: 'Tasks per Day',
+          label: 'Tasks due',
           data: Object.values(dateCounts),
-          backgroundColor: '#4CAF50',
+          backgroundColor: '#4E79A7',
+          borderColor: '#3A5A80',
+          borderWidth: 1,
+          borderRadius: 6,
         }]
       });
       console.log("chart data updated");
@@ -104,6 +146,21 @@ function App() {
     }
   }
 
+  async function handleGoogleLogin(googleResponse) {
+    try {
+      const response = await axios.post('http://localhost:5000/api/auth/google', {
+        idToken: googleResponse.credential,
+      });
+      localStorage.setItem('token', response.data.token);
+      localStorage.setItem('username', response.data.username);
+      setUser(response.data.username);
+      setAuthMessage('');
+    } catch (err) {
+      console.log(err);
+      setAuthMessage(err.response?.data?.error || "Google login failed");
+    }
+  }
+
   // handle logout
   function handleLogout() {
     localStorage.removeItem('token');
@@ -123,9 +180,7 @@ function App() {
       formData.append('title', taskForm.title);
       formData.append('description', taskForm.description);
       formData.append('deadline', taskForm.deadline);
-      if (taskForm.file) {
-        formData.append('file', taskForm.file);
-      }
+      taskForm.files.forEach(file => formData.append('files', file));
 
       if (editingTask) {
         // update existing task
@@ -148,7 +203,7 @@ function App() {
       }
 
       // reset form and reload tasks
-      setTaskForm({ title: '', description: '', deadline: '', file: null });
+      setTaskForm({ title: '', description: '', deadline: '', files: [] });
       setEditingTask(null);
       setFormStatus('Saved!');
       loadTasks();
@@ -184,14 +239,40 @@ function App() {
       title: task.title,
       description: task.description,
       deadline: task.deadline ? task.deadline.slice(0, 16) : '',
-      file: null
+      files: []
     });
   }
 
   // cancel edit
   function cancelEdit() {
     setEditingTask(null);
-    setTaskForm({ title: '', description: '', deadline: '', file: null });
+    setTaskForm({ title: '', description: '', deadline: '', files: [] });
+  }
+
+  function setQuickDeadline(daysToAdd) {
+    const date = new Date();
+    date.setDate(date.getDate() + daysToAdd);
+    date.setHours(17, 0, 0, 0);
+    const localIso = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    setTaskForm({ ...taskForm, deadline: localIso });
+  }
+
+  function setSelectedFiles(fileList) {
+    const incomingFiles = Array.from(fileList || []).filter(Boolean);
+    if (incomingFiles.length === 0) return;
+    setTaskForm(prev => ({ ...prev, files: [...prev.files, ...incomingFiles] }));
+    setIsDraggingFile(false);
+  }
+
+  function removeSelectedFile(indexToRemove) {
+    setTaskForm(prev => ({
+      ...prev,
+      files: prev.files.filter((_, index) => index !== indexToRemove),
+    }));
+  }
+
+  function clearSelectedFiles() {
+    setTaskForm(prev => ({ ...prev, files: [] }));
   }
 
   // export to pdf
@@ -211,8 +292,8 @@ function App() {
     const tableData = myTasks.map(task => [
       task.title,
       task.description || "",
-      task.deadline ? new Date(task.deadline).toLocaleDateString() : "No deadline",
-      task.drive_link ? "Yes" : "No"
+      task.deadline ? new Date(task.deadline).toLocaleString() : "No due date",
+      parseDriveLinks(task.drive_link).length > 0 ? "Yes" : "No"
     ]);
 
     autoTable(doc, {
@@ -231,10 +312,17 @@ function App() {
       return;
     }
 
-    const worksheet = XLSX.utils.json_to_sheet(myTasks);
+    const reportRows = myTasks.map(task => ({
+      Title: task.title,
+      "Task Details": task.description || "",
+      "Due Date": task.deadline ? new Date(task.deadline).toLocaleString() : "No due date",
+      "Has Attachment": parseDriveLinks(task.drive_link).length > 0 ? "Yes" : "No",
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(reportRows);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Tasks");
-    XLSX.writeFile(workbook, user + "_tasks.xlsx");
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Progress Report");
+    XLSX.writeFile(workbook, user + "_progress_report.xlsx");
   }
 
   // show login page if not logged in
@@ -263,6 +351,11 @@ function App() {
           <p onClick={() => setIsLogin(!isLogin)} style={{cursor: 'pointer', textDecoration: 'underline'}}>
             {isLogin ? "Need an account? Sign Up" : "Have an account? Login"}
           </p>
+          {isLogin && (
+            <div style={{marginTop: '12px', display: 'flex', justifyContent: 'center'}}>
+              <div id="google-signin-button"></div>
+            </div>
+          )}
           {authMessage && <p style={{color: 'red'}}>{authMessage}</p>}
         </div>
       </div>
@@ -275,8 +368,8 @@ function App() {
       <header>
         <h1>OJT Task App</h1>
         <div>
-          <button onClick={exportPDF}>Export PDF</button>
-          <button onClick={exportExcel}>Export Excel</button>
+          <button onClick={exportPDF}>Download PDF Progress Report</button>
+          <button onClick={exportExcel}>Download Excel Progress Report</button>
           <span style={{marginLeft: '10px'}}>{user}</span>
           <button onClick={handleLogout} style={{marginLeft: '10px'}}>Logout</button>
         </div>
@@ -285,55 +378,122 @@ function App() {
       <main>
         {/* task form */}
         <div className="form-section">
-          <h3>{editingTask ? 'Edit Task' : 'Add New Task'}</h3>
-          {formStatus && <p>{formStatus}</p>}
+          <h3>{editingTask ? 'Update Task' : 'Create Task'}</h3>
+          <p className="form-help">Fill in the details below to create a task.</p>
+          {formStatus && <p role="status" className="form-status">{formStatus}</p>}
           <form onSubmit={handleSubmitTask}>
             <div>
-              <label>Title:</label>
+              <label className="form-label">Task Title</label>
               <input 
                 type="text" 
                 value={taskForm.title}
                 onChange={(e) => setTaskForm({...taskForm, title: e.target.value})}
+                placeholder="e.g., Submit weekly report"
                 required
               />
+              <small className="field-help">Use a short, clear title.</small>
             </div>
             <div>
-              <label>Description:</label>
+              <label className="form-label">Task Details</label>
               <textarea 
                 value={taskForm.description}
                 onChange={(e) => setTaskForm({...taskForm, description: e.target.value})}
+                placeholder="Describe what needs to be done and any important notes."
                 required
               />
+              <small className="field-help">Include key steps or context for easier follow-through.</small>
             </div>
             <div>
-              <label>Deadline:</label>
+              <label className="form-label">Due Date (Optional)</label>
               <input 
                 type="datetime-local" 
                 value={taskForm.deadline}
                 onChange={(e) => setTaskForm({...taskForm, deadline: e.target.value})}
-                required
               />
+              <div className="quick-actions">
+                <button type="button" className="quick-btn" onClick={() => setQuickDeadline(0)}>Today</button>
+                <button type="button" className="quick-btn" onClick={() => setQuickDeadline(1)}>Tomorrow</button>
+                <button type="button" className="quick-btn" onClick={() => setQuickDeadline(7)}>Next Week</button>
+              </div>
             </div>
             <div>
-              <label>Upload File:</label>
-              <input 
-                type="file" 
-                onChange={(e) => setTaskForm({...taskForm, file: e.target.files[0]})}
-              />
+              <label className="form-label">Attachment (Optional)</label>
+              <label
+                className={`file-dropzone ${isDraggingFile ? 'dragging' : ''}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDraggingFile(true);
+                }}
+                onDragLeave={() => setIsDraggingFile(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setSelectedFiles(e.dataTransfer.files);
+                }}
+              >
+                <input
+                  type="file"
+                  multiple
+                  className="file-input-hidden"
+                  onChange={(e) => setSelectedFiles(e.target.files)}
+                />
+                <span className="dropzone-main"><strong>Drag & drop</strong> a file here, or click to choose</span>
+                <span className="file-name">
+                  {taskForm.files.length > 0
+                    ? `Selected (${taskForm.files.length}): ${taskForm.files.map(file => file.name).join(', ')}`
+                    : 'No file selected'}
+                </span>
+              </label>
+              {taskForm.files.length > 0 && (
+                <div className="selected-file-actions">
+                  {taskForm.files.map((file, index) => (
+                    <button
+                      key={file.name + index}
+                      type="button"
+                      className="file-remove-btn"
+                      onClick={() => removeSelectedFile(index)}
+                    >
+                      Remove {file.name}
+                    </button>
+                  ))}
+                  <button type="button" className="file-clear-btn" onClick={clearSelectedFiles}>
+                    Clear all
+                  </button>
+                </div>
+              )}
+              <small className="field-help">Attach supporting files if needed.</small>
             </div>
             <div>
-              <button type="submit">{editingTask ? 'Update' : 'Add Task'}</button>
-              {editingTask && <button type="button" onClick={cancelEdit}>Cancel</button>}
+              <button type="submit" disabled={isSaving}>{isSaving ? 'Saving...' : (editingTask ? 'Update Task' : 'Save Task')}</button>
+              {editingTask && <button type="button" className="secondary-btn" onClick={cancelEdit}>Cancel</button>}
             </div>
           </form>
         </div>
 
         {/* chart section */}
         <div className="chart-section">
-          <h3>Tasks by Deadline Date</h3>
+          <h3>Tasks by Due Date</h3>
+          <p className="chart-help">Shows how many tasks are due on each date.</p>
           {chartData.labels.length > 0 ? (
             <div style={{maxWidth: '600px', margin: '0 auto'}}>
-              <Bar data={chartData} options={{ responsive: true }} />
+              <Bar
+                data={chartData}
+                options={{
+                  responsive: true,
+                  plugins: {
+                    legend: { labels: { usePointStyle: true, boxWidth: 10 } },
+                  },
+                  scales: {
+                    y: {
+                      beginAtZero: true,
+                      ticks: { precision: 0, stepSize: 1 },
+                      grid: { color: '#E5E7EB' },
+                    },
+                    x: {
+                      grid: { display: false },
+                    },
+                  },
+                }}
+              />
             </div>
           ) : (
             <p>No chart data yet. Add tasks with deadlines to see the chart.</p>
@@ -342,18 +502,21 @@ function App() {
 
         {/* tasks table */}
         <div className="tasks-section">
-          <h3>My Tasks ({myTasks.length})</h3>
+          <div className="section-heading">
+            <h3>Task List</h3>
+            <span className="count-badge">{taskCountText(myTasks.length)}</span>
+          </div>
           
           {myTasks.length === 0 ? (
             <p>No tasks yet. Add one above!</p>
           ) : (
-            <table border="1" cellPadding="10" style={{width: '100%', borderCollapse: 'collapse'}}>
+            <table>
               <thead>
                 <tr>
                   <th>Title</th>
                   <th>Description</th>
                   <th>Deadline</th>
-                  <th>File</th>
+                  <th>File Link</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -368,13 +531,17 @@ function App() {
                         : 'No deadline'}
                     </td>
                     <td>
-                      {task.drive_link 
-                        ? <a href={task.drive_link} target="_blank" rel="noreferrer">View File</a>
-                        : 'None'}
+                      {parseDriveLinks(task.drive_link).length > 0
+                        ? parseDriveLinks(task.drive_link).map((link, index) => (
+                            <div key={link + index}>
+                              <a href={link} target="_blank" rel="noreferrer">File {index + 1}</a>
+                            </div>
+                          ))
+                        : '—'}
                     </td>
-                    <td>
+                    <td className="task-actions">
                       <button onClick={() => handleEdit(task)}>Edit</button>
-                      <button onClick={() => handleDelete(task.id)} style={{marginLeft: '5px'}}>Delete</button>
+                      <button className="delete-btn" onClick={() => handleDelete(task.id)}>Delete</button>
                     </td>
                   </tr>
                 ))}

@@ -8,6 +8,7 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const { Pool } = require("pg");
 const { google } = require("googleapis");
+const { OAuth2Client } = require("google-auth-library");
 const stream = require("stream");
 const cron = require("node-cron");
 const nodemailer = require("nodemailer");
@@ -42,6 +43,7 @@ oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN })
 
 const drive = google.drive({ version: "v3", auth: oauth2Client });
 const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+const googleSignInClient = new OAuth2Client(process.env.GOOGLE_AUTH_CLIENT_ID);
 
 // file upload setup
 const upload = multer({ storage: multer.memoryStorage() });
@@ -54,6 +56,45 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_APP_PASSWORD,
   },
 });
+
+function getNotificationEmail(username) {
+  if (!username) return null;
+  const email = String(username).trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
+
+function parseDriveLinks(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value !== "string") return [];
+
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch (err) {
+      console.log("could not parse drive links json:", err.message);
+    }
+  }
+
+  return [trimmed];
+}
+
+function formatDriveLinksForStorage(links) {
+  const cleanLinks = (links || []).filter(Boolean);
+  if (cleanLinks.length === 0) return null;
+  return cleanLinks.length === 1 ? cleanLinks[0] : JSON.stringify(cleanLinks);
+}
+
+function getUploadedFiles(req) {
+  if (req.files?.files?.length) return req.files.files;
+  if (req.files?.file?.length) return req.files.file;
+  if (req.file) return [req.file];
+  return [];
+}
 
 // helper function to check if user is logged in
 function checkAuth(req, res, next) {
@@ -101,7 +142,7 @@ async function uploadToDrive(file) {
 }
 
 // helper function to sync task to google calendar
-async function syncToCalendar(task, existingEventId) {
+async function syncToCalendar(task, existingEventId, attendeeEmail) {
   try {
     const event = {
       summary: "OJT Task: " + task.title,
@@ -109,12 +150,16 @@ async function syncToCalendar(task, existingEventId) {
       start: { dateTime: new Date(task.deadline).toISOString() },
       end: { dateTime: new Date(new Date(task.deadline).getTime() + 3600000).toISOString() },
     };
+    if (attendeeEmail) {
+      event.attendees = [{ email: attendeeEmail }];
+    }
 
     if (existingEventId) {
       const res = await calendar.events.update({
         calendarId: "primary",
         eventId: existingEventId,
         requestBody: event,
+        sendUpdates: "all",
       });
       return res.data.id;
     }
@@ -122,6 +167,7 @@ async function syncToCalendar(task, existingEventId) {
     const res = await calendar.events.insert({
       calendarId: "primary",
       requestBody: event,
+      sendUpdates: "all",
     });
     console.log("event added to calendar");
     return res.data.id;
@@ -132,11 +178,15 @@ async function syncToCalendar(task, existingEventId) {
 }
 
 // helper function to send email notification immediately
-async function sendEmailNotification(task, subject) {
+async function sendEmailNotification(task, subject, recipientEmail) {
+  if (!recipientEmail) {
+    console.log("skipping email, user has no valid email:", task.user_id || "unknown");
+    return;
+  }
   try {
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
-      to: process.env.ADMIN_EMAIL,
+      to: recipientEmail,
       subject: subject,
       html: `<p>Task "<b>${task.title}</b>" has been created!</p>
              <p>Description: ${task.description}</p>
@@ -204,6 +254,44 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// google login route
+app.post("/api/auth/google", async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken) {
+      return res.status(400).json({ error: "Missing Google token" });
+    }
+
+    const ticket = await googleSignInClient.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_AUTH_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+
+    if (!payload?.email || payload.email_verified !== true) {
+      return res.status(400).json({ error: "Google account is not verified" });
+    }
+
+    const username = payload.email;
+    let result = await pool.query("SELECT id, username FROM users WHERE username = $1", [username]);
+
+    if (result.rows.length === 0) {
+      const randomPassword = await bcrypt.hash("google_" + payload.sub + "_" + Date.now(), 10);
+      result = await pool.query(
+        "INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username",
+        [username, randomPassword]
+      );
+    }
+
+    const user = result.rows[0];
+    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token, username: user.username });
+  } catch (err) {
+    console.log("google login error:", err);
+    res.status(401).json({ error: "Google login failed" });
+  }
+});
+
 // ==================== ACTIVITY ROUTES ====================
 
 // get all tasks for user
@@ -240,24 +328,29 @@ app.get("/api/activities", checkAuth, async (req, res) => {
 });
 
 // create new task
-app.post("/api/activities", checkAuth, upload.single("file"), async (req, res) => {
+app.post("/api/activities", checkAuth, upload.fields([{ name: "files", maxCount: 10 }, { name: "file", maxCount: 1 }]), async (req, res) => {
   try {
     const { title, description, deadline } = req.body;
     const userId = req.user.id;
+    const userResult = await pool.query("SELECT username FROM users WHERE id = $1", [userId]);
+    const recipientEmail = getNotificationEmail(userResult.rows[0]?.username);
 
     // upload file to drive if there is one
-    let driveLink = null;
-    if (req.file) {
-      driveLink = await uploadToDrive(req.file);
+    const uploadedFiles = getUploadedFiles(req);
+    const driveLinks = [];
+    for (const file of uploadedFiles) {
+      const link = await uploadToDrive(file);
+      if (link) driveLinks.push(link);
     }
+    const driveLink = formatDriveLinksForStorage(driveLinks);
 
     // sync to calendar if there is deadline
     let calendarEventId = null;
     if (deadline) {
-      calendarEventId = await syncToCalendar({ title, description, deadline });
+      calendarEventId = await syncToCalendar({ title, description, deadline }, null, recipientEmail);
       
       // send email notification immediately when task with deadline is created
-      sendEmailNotification({ title, description, deadline }, "New Task Created with Deadline");
+      sendEmailNotification({ title, description, deadline, user_id: userId }, "New Task Created with Deadline", recipientEmail);
     }
 
     // save to database
@@ -276,11 +369,13 @@ app.post("/api/activities", checkAuth, upload.single("file"), async (req, res) =
 });
 
 // update task
-app.put("/api/activities/:id", checkAuth, upload.single("file"), async (req, res) => {
+app.put("/api/activities/:id", checkAuth, upload.fields([{ name: "files", maxCount: 10 }, { name: "file", maxCount: 1 }]), async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, deadline } = req.body;
     const userId = req.user.id;
+    const userResult = await pool.query("SELECT username FROM users WHERE id = $1", [userId]);
+    const recipientEmail = getNotificationEmail(userResult.rows[0]?.username);
 
     // check if task belongs to user
     const current = await pool.query(
@@ -295,15 +390,18 @@ app.put("/api/activities/:id", checkAuth, upload.single("file"), async (req, res
     const existing = current.rows[0];
 
     // handle file upload
-    let driveLink = req.body.existing_link || existing.drive_link;
-    if (req.file) {
-      driveLink = await uploadToDrive(req.file);
+    let driveLinks = parseDriveLinks(existing.drive_link);
+    const uploadedFiles = getUploadedFiles(req);
+    for (const file of uploadedFiles) {
+      const link = await uploadToDrive(file);
+      if (link) driveLinks.push(link);
     }
+    const driveLink = formatDriveLinksForStorage(driveLinks);
 
     // sync calendar
     let calendarId = existing.google_calendar_event_id;
     if (deadline) {
-      calendarId = await syncToCalendar({ title, description, deadline }, existing.google_calendar_event_id);
+      calendarId = await syncToCalendar({ title, description, deadline }, existing.google_calendar_event_id, recipientEmail);
     }
 
     // update in database
@@ -382,10 +480,17 @@ cron.schedule("*/5 * * * *", async () => {
 
     for (const task of reminders.rows) {
       try {
+        const recipientEmail = getNotificationEmail(task.username);
+        if (!recipientEmail) {
+          await pool.query("UPDATE activities SET reminder_sent = TRUE WHERE id = $1", [task.id]);
+          console.log("skipping reminder email, user has no valid email:", task.username);
+          continue;
+        }
+
         // send email reminder
         await transporter.sendMail({
           from: process.env.EMAIL_USER,
-          to: process.env.ADMIN_EMAIL,
+          to: recipientEmail,
           subject: "Upcoming Deadline Reminder",
           html: `<p>Task "<b>${task.title}</b>" is due soon!</p>
                  <p>Deadline: ${new Date(task.deadline).toLocaleString()}</p>`,
@@ -409,9 +514,16 @@ cron.schedule("*/5 * * * *", async () => {
 
     for (const task of alerts.rows) {
       try {
+        const recipientEmail = getNotificationEmail(task.username);
+        if (!recipientEmail) {
+          await pool.query("UPDATE activities SET deadline_alert_sent = TRUE WHERE id = $1", [task.id]);
+          console.log("skipping deadline alert email, user has no valid email:", task.username);
+          continue;
+        }
+
         await transporter.sendMail({
           from: process.env.EMAIL_USER,
-          to: process.env.ADMIN_EMAIL,
+          to: recipientEmail,
           subject: "DEADLINE REACHED: " + task.title,
           html: `<p>Task "<b>${task.title}</b>" has reached its deadline!</p>`,
         });
