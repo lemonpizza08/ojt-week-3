@@ -11,7 +11,7 @@ A full-stack task management application built with React and Node.js, featuring
 ## Project Structure
 
 ```
-ojtweek2/
+ojt-week-3/
 ├── client/                  # React frontend
 │   └── src/
 │       ├── components/      # Reusable UI components
@@ -37,7 +37,7 @@ ojtweek2/
 
 ```bash
 git clone <repo-url>
-cd ojtweek2
+cd ojt-week-3
 
 cd server && npm install
 cd ../client && npm install
